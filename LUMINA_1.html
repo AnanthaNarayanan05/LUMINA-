@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>LUMINA – RAG Assistant</title>
+
+<!-- PDF.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- TF.js + Universal Sentence Encoder -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.17.0/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3/dist/universal-sentence-encoder.min.js"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap');
+
+  :root {
+    --bg:       #0a0a0f;
+    --surface:  #13131a;
+    --card:     #1a1a25;
+    --border:   #2a2a3a;
+    --accent:   #7c6aff;
+    --accent2:  #c084fc;
+    --gold:     #f0c060;
+    --text:     #e8e8f0;
+    --muted:    #6b6b85;
+    --success:  #34d399;
+    --danger:   #f87171;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'DM Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── background grid ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background-image:
+      linear-gradient(rgba(124,106,255,.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(124,106,255,.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  /* ── glow orbs ── */
+  .orb {
+    position: fixed; border-radius: 50%;
+    filter: blur(120px); pointer-events: none; z-index: 0;
+  }
+  .orb1 { width:500px; height:500px; background:rgba(124,106,255,.12); top:-150px; left:-150px; }
+  .orb2 { width:400px; height:400px; background:rgba(192,132,252,.08); bottom:-100px; right:-100px; }
+
+  /* ── layout ── */
+  #app { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+  /* ── header ── */
+  header {
+    text-align: center;
+    padding: 40px 0 32px;
+    animation: fadeDown .6s ease both;
+  }
+  .logo-line {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    margin-bottom: 8px;
+  }
+  .logo-icon {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    box-shadow: 0 0 24px rgba(124,106,255,.4);
+  }
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 800;
+    letter-spacing: -.02em;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--gold));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .tagline { color: var(--muted); font-size: .85rem; letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
+
+  /* ── main grid ── */
+  .grid { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+  /* ── panels ── */
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px;
+    animation: fadeUp .5s ease both;
+  }
+  .panel-title {
+    font-family: 'Syne', sans-serif;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  /* ── API key input ── */
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: .72rem; color: var(--muted); margin-bottom: 6px; letter-spacing: .05em; text-transform: uppercase; }
+  .field input, .field select {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: .8rem;
+    padding: 10px 12px;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+
+  /* ── upload zone ── */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .2s;
+    margin-bottom: 16px;
+    position: relative;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(124,106,255,.06); }
+  .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+  .upload-icon { font-size: 2rem; margin-bottom: 8px; }
+  .upload-text { font-size: .78rem; color: var(--muted); }
+  .upload-text span { color: var(--accent); }
+
+  /* ── status badge ── */
+  .status {
+    display: flex; align-items: center; gap: 8px;
+    font-size: .75rem; padding: 10px 12px;
+    border-radius: 8px; margin-bottom: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    min-height: 40px;
+  }
+  .status.ok   { border-color: var(--success); color: var(--success); }
+  .status.err  { border-color: var(--danger);  color: var(--danger); }
+  .status.info { border-color: var(--accent);  color: var(--accent); }
+  .dot { width:8px; height:8px; border-radius:50%; background: currentColor; flex-shrink:0; }
+  .dot.pulse { animation: pulse 1.2s infinite; }
+
+  /* ── slider ── */
+  .slider-wrap { margin-bottom: 16px; }
+  .slider-label { display:flex; justify-content:space-between; font-size:.72rem; color:var(--muted); margin-bottom:6px; }
+  input[type=range] {
+    width:100%; accent-color: var(--accent);
+    height:4px; cursor:pointer;
+  }
+
+  /* ── metadata cards ── */
+  .meta-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px; }
+  .meta-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px; }
+  .meta-card .label { font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .meta-card .value { font-size:.9rem; font-weight:600; color:var(--text); margin-top:2px; font-family:'Syne',sans-serif; }
+
+  .trust-bar-wrap { margin-bottom:16px; }
+  .trust-bar-bg { height:8px; background:var(--surface); border-radius:99px; overflow:hidden; margin-top:6px; border:1px solid var(--border); }
+  .trust-bar-fill { height:100%; border-radius:99px; background:linear-gradient(90deg, var(--accent), var(--accent2)); transition:width .6s ease; }
+
+  /* ── buttons ── */
+  .btn {
+    width:100%; padding:11px 16px; border-radius:10px; border:none; cursor:pointer;
+    font-family:'Syne',sans-serif; font-size:.82rem; font-weight:700; letter-spacing:.04em;
+    transition:all .2s; margin-bottom:8px;
+  }
+  .btn-primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; box-shadow:0 0 20px rgba(124,106,255,.3); }
+  .btn-primary:hover { transform:translateY(-1px); box-shadow:0 0 30px rgba(124,106,255,.5); }
+  .btn-primary:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+  .btn-ghost { background:var(--surface); color:var(--muted); border:1px solid var(--border); }
+  .btn-ghost:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* ── revision box ── */
+  .revision-box {
+    background:var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding:12px; font-size:.75rem; line-height:1.8; color:var(--text);
+    min-height:80px; white-space:pre-wrap; max-height:200px; overflow-y:auto;
+  }
+
+  /* ── chat panel ── */
+  .chat-panel { display:flex; flex-direction:column; height:calc(100vh - 220px); min-height:500px; }
+  .chat-messages {
+    flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px;
+    scroll-behavior:smooth;
+  }
+  .chat-messages::-webkit-scrollbar { width:4px; }
+  .chat-messages::-webkit-scrollbar-track { background:transparent; }
+  .chat-messages::-webkit-scrollbar-thumb { background:var(--border); border-radius:99px; }
+
+  /* ── messages ── */
+  .msg { display:flex; gap:10px; animation: msgIn .3s ease both; }
+  .msg.user { flex-direction:row-reverse; }
+  .avatar {
+    width:32px; height:32px; border-radius:10px; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:14px;
+  }
+  .avatar.ai  { background:linear-gradient(135deg,var(--accent),var(--accent2)); }
+  .avatar.usr { background:var(--surface); border:1px solid var(--border); }
+  .bubble {
+    max-width:75%; padding:12px 16px; border-radius:14px; font-size:.82rem; line-height:1.7;
+    border:1px solid var(--border);
+  }
+  .msg.ai   .bubble { background:var(--card); border-radius:4px 14px 14px 14px; }
+  .msg.user .bubble { background:rgba(124,106,255,.15); border-color:rgba(124,106,255,.3); border-radius:14px 4px 14px 14px; }
+  .bubble .cite { display:inline-block; font-size:.68rem; color:var(--accent); margin-top:6px; }
+  .bubble .trust-tag {
+    display:inline-block; font-size:.65rem; padding:2px 8px; border-radius:99px;
+    background:rgba(52,211,153,.1); color:var(--success); border:1px solid rgba(52,211,153,.2);
+    margin-left:6px;
+  }
+
+  /* ── typing indicator ── */
+  .typing { display:flex; gap:4px; align-items:center; padding:12px 16px; }
+  .typing span { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:bounce .9s infinite; }
+  .typing span:nth-child(2) { animation-delay:.15s; }
+  .typing span:nth-child(3) { animation-delay:.3s; }
+
+  /* ── chat input ── */
+  .chat-input-wrap {
+    display:flex; gap:10px; padding:16px;
+    border-top:1px solid var(--border);
+    background:var(--card); border-radius:0 0 16px 16px;
+  }
+  #chatInput {
+    flex:1; background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    color:var(--text); font-family:'DM Mono',monospace; font-size:.82rem; padding:11px 14px;
+    outline:none; resize:none; transition:border-color .2s; height:44px; overflow:hidden;
+  }
+  #chatInput:focus { border-color:var(--accent); }
+  #sendBtn {
+    width:44px; height:44px; border-radius:10px; border:none; cursor:pointer; flex-shrink:0;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff; font-size:18px; display:flex; align-items:center; justify-content:center;
+    transition:all .2s; box-shadow:0 0 16px rgba(124,106,255,.3);
+  }
+  #sendBtn:hover { transform:scale(1.05); }
+  #sendBtn:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+
+  /* ── empty state ── */
+  .empty-state {
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:12px; color:var(--muted); text-align:center; padding:40px;
+  }
+  .empty-state .big { font-size:3rem; }
+  .empty-state p { font-size:.8rem; line-height:1.7; max-width:280px; }
+
+  /* ── progress bar ── */
+  .progress-bar {
+    height:3px; background:var(--surface); border-radius:99px; overflow:hidden; margin-bottom:12px;
+  }
+  .progress-fill {
+    height:100%; background:linear-gradient(90deg,var(--accent),var(--accent2));
+    border-radius:99px; transition:width .3s ease;
+  }
+
+  /* ── animations ── */
+  @keyframes fadeDown { from{opacity:0;transform:translateY(-20px)} to{opacity:1;transform:translateY(0)} }
+  @keyframes fadeUp   { from{opacity:0;transform:translateY(20px)}  to{opacity:1;transform:translateY(0)} }
+  @keyframes msgIn    { from{opacity:0;transform:translateY(8px)}   to{opacity:1;transform:translateY(0)} }
+  @keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:.3} }
+  @keyframes bounce   { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+  @keyframes spin     { to{transform:rotate(360deg)} }
+  .spin { animation:spin 1s linear infinite; display:inline-block; }
+</style>
+</head>
+<body>
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+
+<div id="app">
+  <header>
+    <div class="logo-line">
+      <div class="logo-icon">💡</div>
+      <h1>LUMINA</h1>
+    </div>
+    <div class="tagline">Illuminating Context through Retrieval-Augmented Generation</div>
+  </header>
+
+  <div class="grid">
+    <!-- ── LEFT PANEL ── -->
+    <div>
+      <!-- API Key -->
+      <div class="panel" style="margin-bottom:16px; animation-delay:.1s">
+        <div class="panel-title">🔑 Configuration</div>
+        <div class="field">
+          <label>Anthropic API Key</label>
+          <input type="password" id="apiKey" placeholder="sk-ant-..." />
+        </div>
+      </div>
+
+      <!-- Upload -->
+      <div class="panel" style="margin-bottom:16px; animation-delay:.2s">
+        <div class="panel-title">📄 Document</div>
+        <div class="upload-zone" id="uploadZone">
+          <input type="file" id="pdfInput" accept=".pdf" />
+          <div class="upload-icon">📂</div>
+          <div class="upload-text">Drop PDF here or <span>browse</span></div>
+        </div>
+        <div class="progress-bar" id="progressBar" style="display:none">
+          <div class="progress-fill" id="progressFill" style="width:0%"></div>
+        </div>
+        <div class="status" id="uploadStatus">
+          <div class="dot"></div>
+          <span>No document loaded</span>
+        </div>
+
+        <!-- Threshold -->
+        <div class="slider-wrap">
+          <div class="slider-label">
+            <span>Guardrail Threshold</span>
+            <span id="threshVal">0.30</span>
+          </div>
+          <input type="range" id="threshold" min="0.05" max="0.70" step="0.01" value="0.30" />
+        </div>
+      </div>
+
+      <!-- Metadata -->
+      <div class="panel" style="margin-bottom:16px; animation-delay:.3s">
+        <div class="panel-title">📊 Retrieval Info</div>
+        <div class="meta-grid">
+          <div class="meta-card">
+            <div class="label">Source Page</div>
+            <div class="value" id="metaPage">—</div>
+          </div>
+          <div class="meta-card">
+            <div class="label">Similarity</div>
+            <div class="value" id="metaSim">—</div>
+          </div>
+        </div>
+        <div class="trust-bar-wrap">
+          <div class="slider-label">
+            <span>Trust Score</span>
+            <span id="trustVal">0%</span>
+          </div>
+          <div class="trust-bar-bg">
+            <div class="trust-bar-fill" id="trustFill" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Revision -->
+      <div class="panel" style="animation-delay:.4s">
+        <div class="panel-title">🧠 Revision Questions</div>
+        <button class="btn btn-ghost" id="revBtn" onclick="generateRevision()">Generate Questions</button>
+        <div class="revision-box" id="revisionBox">Questions will appear here…</div>
+      </div>
+    </div>
+
+    <!-- ── RIGHT PANEL (CHAT) ── -->
+    <div class="panel chat-panel" style="padding:0; animation-delay:.15s">
+      <div style="padding:16px 20px; border-bottom:1px solid var(--border);">
+        <div class="panel-title" style="margin:0">💬 Ask LUMINA</div>
+      </div>
+
+      <div class="chat-messages" id="chatMessages">
+        <div class="empty-state" id="emptyState">
+          <div class="big">💡</div>
+          <p>Upload a PDF document on the left, then ask me anything about it.</p>
+        </div>
+      </div>
+
+      <div class="chat-input-wrap">
+        <textarea id="chatInput" placeholder="Ask a question about your document…" disabled></textarea>
+        <button id="sendBtn" onclick="sendMessage()" disabled>↑</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+// CONFIG
+// ══════════════════════════════════════════════
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ══════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════
+let chunks     = [];       // {text, pageNum, embedding}
+let useModel   = null;     // Universal Sentence Encoder
+let chatHistory= [];       // [{role, content}]
+let isLoading  = false;
+
+// ══════════════════════════════════════════════
+// MODULE 1 – DOCUMENT PROCESSING
+// ══════════════════════════════════════════════
+
+async function extractTextFromPDF(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const text = content.items.map(item => item.str).join(' ');
+    pages.push({ pageNum: i, text: cleanText(text) });
+  }
+  return pages;
+}
+
+function cleanText(text) {
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/(\w)-\s+(\w)/g, '$1$2')
+    .trim();
+}
+
+function chunkPages(pages, maxWords = 150, overlap = 30) {
+  const result = [];
+  for (const page of pages) {
+    const words = page.text.split(' ').filter(Boolean);
+    if (words.length === 0) continue;
+    let start = 0;
+    while (start < words.length) {
+      const end = Math.min(start + maxWords, words.length);
+      const chunkText = words.slice(start, end).join(' ');
+      if (chunkText.trim()) {
+        result.push({ text: chunkText, pageNum: page.pageNum });
+      }
+      if (end === words.length) break;
+      start = end - overlap;
+    }
+  }
+  return result;
+}
+
+// ══════════════════════════════════════════════
+// MODULE 2 – EMBEDDING GENERATION
+// ══════════════════════════════════════════════
+
+async function loadEmbeddingModel() {
+  setStatus('info', '⚡ Loading embedding model…');
+  useModel = await use.load();
+  setStatus('info', '✅ Model ready. Embedding document…');
+}
+
+async function embedTexts(texts) {
+  const embeddings = await useModel.embed(texts);
+  const result = await embeddings.array();
+  embeddings.dispose();
+  return result;
+}
+
+// ══════════════════════════════════════════════
+// MODULE 3 – VECTOR STORE (cosine similarity)
+// ══════════════════════════════════════════════
+
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB) + 1e-8);
+}
+
+function searchChunks(queryEmbedding, topK = 5) {
+  const scored = chunks.map(c => ({
+    ...c,
+    score: cosineSimilarity(queryEmbedding, c.embedding)
+  }));
+  return scored.sort((a, b) => b.score - a.score).slice(0, topK);
+}
+
+// ══════════════════════════════════════════════
+// MODULE 4 – RETRIEVAL & GUARDRAIL
+// ══════════════════════════════════════════════
+
+async function retrieve(query) {
+  const [qEmbed] = await embedTexts([query]);
+  const threshold = parseFloat(document.getElementById('threshold').value);
+  const results = searchChunks(qEmbed, 5);
+  const bestScore = results[0]?.score || 0;
+  const passed = bestScore >= threshold;
+  const trustScore = passed
+    ? Math.min(100, Math.round(((bestScore - threshold) / (1 - threshold)) * 100))
+    : 0;
+  const sourcePages = [...new Set(results.map(r => r.pageNum))];
+  const contextText = results.map(r => `[Page ${r.pageNum}] ${r.text}`).join('\n\n');
+  return { results, bestScore, passed, trustScore, sourcePages, contextText };
+}
+
+// ══════════════════════════════════════════════
+// MODULE 5 – LLM GENERATION (Anthropic API)
+// ══════════════════════════════════════════════
+
+async function callClaude(system, userMsg) {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) throw new Error('Please enter your Anthropic API key.');
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 800,
+      system,
+      messages: [{ role: 'user', content: userMsg }]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `API error ${response.status}`);
+  }
+  const data = await response.json();
+  return data.content[0].text.trim();
+}
+
+const ANSWER_SYSTEM = `You are LUMINA, a precise document-grounded assistant.
+Rules:
+1. Answer ONLY using the provided document context.
+2. If the context does not contain the answer, say "I could not find that in the document."
+3. Do not repeat headings. Do not add outside information.
+4. Be concise and factual.
+5. End your answer with: Source: Page X (the page number you used).`;
+
+async function generateAnswer(query, retrieval) {
+  if (!retrieval.passed) {
+    return "⚠️ I couldn't find relevant information in the document to answer this question. Try rephrasing or lowering the guardrail threshold.";
+  }
+  const historyBlock = chatHistory.slice(-6)
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n');
+  const userMsg = `${historyBlock ? 'Conversation so far:\n' + historyBlock + '\n\n' : ''}Document context:\n${retrieval.contextText}\n\nQuestion: ${query}`;
+  return callClaude(ANSWER_SYSTEM, userMsg);
+}
+
+async function generateRevisionQuestions(contextText) {
+  const system = `You are an expert educator. Generate 5 clear, thought-provoking revision questions 
+  from the document context that test understanding of key concepts. Number each question 1-5. No answers.`;
+  return callClaude(system, `Document context:\n${contextText}`);
+}
+
+// ══════════════════════════════════════════════
+// MODULE 6 – CONVERSATION MEMORY
+// ══════════════════════════════════════════════
+
+function addToHistory(role, content) {
+  chatHistory.push({ role, content });
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+}
+
+// ══════════════════════════════════════════════
+// UI HELPERS
+// ══════════════════════════════════════════════
+
+function setStatus(type, msg) {
+  const el = document.getElementById('uploadStatus');
+  el.className = 'status ' + type;
+  el.innerHTML = `<div class="dot${type==='info'?' pulse':''}"></div><span>${msg}</span>`;
+}
+
+function setProgress(pct) {
+  const bar = document.getElementById('progressBar');
+  const fill = document.getElementById('progressFill');
+  if (pct > 0 && pct < 100) { bar.style.display = 'block'; fill.style.width = pct + '%'; }
+  else { bar.style.display = 'none'; fill.style.width = '0%'; }
+}
+
+function updateMeta(retrieval) {
+  document.getElementById('metaPage').textContent =
+    retrieval.sourcePages.length ? retrieval.sourcePages.join(', ') : '—';
+  document.getElementById('metaSim').textContent =
+    retrieval.bestScore.toFixed(3);
+  document.getElementById('trustVal').textContent = retrieval.trustScore + '%';
+  document.getElementById('trustFill').style.width = retrieval.trustScore + '%';
+}
+
+function appendMessage(role, content, meta = null) {
+  const container = document.getElementById('chatMessages');
+  const empty = document.getElementById('emptyState');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  div.className = `msg ${role === 'user' ? 'user' : 'ai'}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = `avatar ${role === 'user' ? 'usr' : 'ai'}`;
+  avatar.textContent = role === 'user' ? '👤' : '💡';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = content;
+
+  if (meta && meta.passed) {
+    const cite = document.createElement('div');
+    cite.className = 'cite';
+    cite.textContent = `📄 Pages: ${meta.sourcePages.join(', ')}`;
+    const trust = document.createElement('span');
+    trust.className = 'trust-tag';
+    trust.textContent = `Trust ${meta.trustScore}%`;
+    cite.appendChild(trust);
+    bubble.appendChild(cite);
+  }
+
+  div.appendChild(avatar);
+  div.appendChild(bubble);
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function showTyping() {
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg ai'; div.id = 'typingIndicator';
+  div.innerHTML = `
+    <div class="avatar ai">💡</div>
+    <div class="bubble" style="padding:12px 16px">
+      <div class="typing"><span></span><span></span><span></span></div>
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeTyping() {
+  const el = document.getElementById('typingIndicator');
+  if (el) el.remove();
+}
+
+// ══════════════════════════════════════════════
+// EVENT HANDLERS
+// ══════════════════════════════════════════════
+
+// Threshold slider
+document.getElementById('threshold').addEventListener('input', function() {
+  document.getElementById('threshVal').textContent = parseFloat(this.value).toFixed(2);
+});
+
+// Drag & drop
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type === 'application/pdf') handleFile(file);
+});
+document.getElementById('pdfInput').addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+// Enter key
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// ══════════════════════════════════════════════
+// MAIN HANDLERS
+// ══════════════════════════════════════════════
+
+async function handleFile(file) {
+  chunks = []; chatHistory = [];
+  document.getElementById('chatMessages').innerHTML =
+    '<div class="empty-state" id="emptyState"><div class="big">⚙️</div><p>Processing document…</p></div>';
+  document.getElementById('chatInput').disabled = true;
+  document.getElementById('sendBtn').disabled = true;
+
+  try {
+    setProgress(10);
+    setStatus('info', '📖 Extracting text…');
+    const pages = await extractTextFromPDF(file);
+    setProgress(30);
+
+    const rawChunks = chunkPages(pages);
+    if (rawChunks.length === 0) {
+      setStatus('err', '❌ No text found in PDF'); setProgress(0); return;
+    }
+
+    setProgress(40);
+    if (!useModel) await loadEmbeddingModel();
+    setProgress(50);
+
+    setStatus('info', `🔢 Embedding ${rawChunks.length} chunks…`);
+    const BATCH = 32;
+    const allEmbeddings = [];
+    for (let i = 0; i < rawChunks.length; i += BATCH) {
+      const batch = rawChunks.slice(i, i + BATCH).map(c => c.text);
+      const embs  = await embedTexts(batch);
+      allEmbeddings.push(...embs);
+      setProgress(50 + Math.round((i / rawChunks.length) * 45));
+    }
+
+    chunks = rawChunks.map((c, i) => ({ ...c, embedding: allEmbeddings[i] }));
+    setProgress(100);
+    setStatus('ok', `✅ ${chunks.length} chunks indexed from ${pages.length} pages`);
+    setTimeout(() => setProgress(0), 500);
+
+    document.getElementById('chatMessages').innerHTML = `
+      <div class="empty-state" id="emptyState">
+        <div class="big">💡</div>
+        <p>Document ready! Ask me anything about <strong>${file.name}</strong>.</p>
+      </div>`;
+    document.getElementById('chatInput').disabled = false;
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('chatInput').focus();
+
+  } catch(err) {
+    setStatus('err', '❌ ' + err.message);
+    setProgress(0);
+  }
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const query = input.value.trim();
+  if (!query || isLoading || chunks.length === 0) return;
+
+  isLoading = true;
+  input.value = '';
+  input.disabled = true;
+  document.getElementById('sendBtn').disabled = true;
+
+  appendMessage('user', query);
+  addToHistory('user', query);
+  showTyping();
+
+  try {
+    const retrieval = await retrieve(query);
+    updateMeta(retrieval);
+    const answer = await generateAnswer(query, retrieval);
+    removeTyping();
+    appendMessage('assistant', answer, retrieval);
+    addToHistory('assistant', answer);
+  } catch(err) {
+    removeTyping();
+    appendMessage('assistant', '❌ Error: ' + err.message);
+  } finally {
+    isLoading = false;
+    input.disabled = false;
+    document.getElementById('sendBtn').disabled = false;
+    input.focus();
+  }
+}
+
+async function generateRevision() {
+  if (chunks.length === 0) {
+    document.getElementById('revisionBox').textContent = '⚠️ Upload a document first.';
+    return;
+  }
+  const btn = document.getElementById('revBtn');
+  btn.disabled = true;
+  btn.textContent = '⚡ Generating…';
+  document.getElementById('revisionBox').textContent = 'Generating questions…';
+  try {
+    const [qEmbed] = await embedTexts(['main topics key concepts summary']);
+    const results = searchChunks(qEmbed, 6);
+    const context = results.map(r => `[Page ${r.pageNum}] ${r.text}`).join('\n\n');
+    const qs = await generateRevisionQuestions(context);
+    document.getElementById('revisionBox').textContent = qs;
+  } catch(err) {
+    document.getElementById('revisionBox').textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate Questions';
+  }
+}
+</script>
+</body>
+</html>
